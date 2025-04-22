@@ -11,7 +11,7 @@ import TranscriptInput from '@/components/TranscriptInput';
 import Recorder from '@/components/Recorder';
 import { ImSpinner2 } from 'react-icons/im'; // Import a spinner icon
 // Add icons for review mode
-import { FaRedoAlt, FaListUl, FaMicrophone, FaClock } from 'react-icons/fa';
+import { FaRedoAlt, FaListUl, FaMicrophone } from 'react-icons/fa';
 
 // Interface remains largely the same, but id is likely string (UUID)
 // and created_at is string (ISO timestamp)
