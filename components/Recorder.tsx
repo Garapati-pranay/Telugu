@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import {
-    FaMicrophone, FaStop, FaPlay, FaRedoAlt, FaCheck, FaExclamationTriangle
+    FaMicrophone, FaStop, FaRedoAlt, FaCheck, FaExclamationTriangle
 } from 'react-icons/fa'; // Import relevant icons
 
 interface Transcript {
@@ -57,9 +57,9 @@ const Recorder: React.FC<RecorderProps> = ({ transcript, onConfirm, isUploading 
             // We don't need to keep the stream active here, just check permission
             // Stop tracks immediately to release the mic indicator
             stream.getTracks().forEach(track => track.stop());
-        } catch (err: any) {
+        } catch (err) {
             console.error("Permission denied:", err);
-            setError("Microphone permission denied. Please allow access in your browser settings.");
+            setError(`Microphone permission denied. Please allow access in your browser settings. Error: ${(err as Error).message}`);
             setPermissionGranted(false);
         }
     };
@@ -92,8 +92,9 @@ const Recorder: React.FC<RecorderProps> = ({ transcript, onConfirm, isUploading 
                 }
                  // If still no permission, the error state should be set from getMicPermission
                 if (permissionGranted === false) return;
-            } catch (err:any) {
-                setError("Microphone access is required to start recording.");
+            } catch (err) {
+                console.error("Error checking microphone access:", err);
+                setError(`Microphone access is required to start recording. ${(err as Error).message}`);
                 setPermissionGranted(false);
                  return;
             }
@@ -131,9 +132,9 @@ const Recorder: React.FC<RecorderProps> = ({ transcript, onConfirm, isUploading 
 
             recorder.start();
             setIsRecording(true);
-        } catch (err: any) {
+        } catch (err) {
             console.error("Error starting recording:", err);
-            setError(`Could not start recording: ${err.message}`);
+            setError(`Could not start recording: ${(err as Error).message}`);
             resetState();
         }
     };

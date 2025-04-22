@@ -11,7 +11,7 @@ import TranscriptInput from '@/components/TranscriptInput';
 import Recorder from '@/components/Recorder';
 import { ImSpinner2 } from 'react-icons/im'; // Import a spinner icon
 // Add icons for review mode
-import { FaPlay, FaRedoAlt, FaListUl, FaMicrophone } from 'react-icons/fa';
+import { FaRedoAlt, FaListUl, FaMicrophone } from 'react-icons/fa';
 
 // Interface remains largely the same, but id is likely string (UUID)
 // and created_at is string (ISO timestamp)
@@ -64,10 +64,9 @@ export default function Home() {
       if (completedError) throw completedError;
       setCompletedCount(completed ?? 0);
 
-    } catch (err: any) {
+    } catch (err) {
        console.error("Error fetching counts:", err);
-       setError(`Failed to fetch counts: ${err.message}`);
-       // Consider if this error should block the UI
+       setError(`Failed to fetch counts: ${(err as Error).message}`);
     }
   }, []);
 
@@ -88,9 +87,9 @@ export default function Home() {
       setCurrentTranscript(data as Transcript | null);
       // setIsLoading(false); // Loading finished after fetch
 
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error fetching pending transcript:", err);
-      setError(`Failed to fetch next transcript: ${err.message}`);
+      setError(`Failed to fetch next transcript: ${(err as Error).message}`);
       setCurrentTranscript(null); // Clear transcript on error
       // setIsLoading(false);
     }
@@ -109,9 +108,9 @@ export default function Home() {
 
           if (error) throw error;
           setReviewList((data as Transcript[]) ?? []);
-      } catch (err: any) {
+      } catch (err) {
           console.error("Error fetching completed transcripts:", err);
-          setError(`Failed to fetch review list: ${err.message}`);
+          setError(`Failed to fetch review list: ${(err as Error).message}`);
           setReviewList([]);
       } finally {
           setIsFetchingReviewList(false);
@@ -137,9 +136,9 @@ export default function Home() {
         if (!exists) {
              setMode('record'); // Default to record mode if nothing exists
         }
-      } catch (err: any) {
+      } catch (err) {
         console.error("Error checking transcript existence:", err);
-        setError(`Failed to check for transcripts: ${err.message}`);
+        setError(`Failed to check for transcripts: ${(err as Error).message}`);
         setTranscriptsExist(false); // Assume none exist on error
       } finally {
         setIsLoading(false);
@@ -264,9 +263,9 @@ export default function Home() {
       }
       // For normal records, the realtime listener handles fetching the next pending one.
 
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error confirming recording:", err);
-      setError(`Failed to save recording: ${err.message}`);
+      setError(`Failed to save recording: ${(err as Error).message}`);
     } finally {
       setIsUploading(false);
     }

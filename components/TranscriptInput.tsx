@@ -46,7 +46,7 @@ const TranscriptInput: React.FC<TranscriptInputProps> = ({ onSubmitted, transcri
 
     try {
       // Use Supabase bulk insert
-      const { data, error: insertError } = await supabase
+      const { error: insertError } = await supabase
         .from('transcripts') // Make sure your table name is 'transcripts'
         .insert(transcriptsToInsert);
 
@@ -57,9 +57,9 @@ const TranscriptInput: React.FC<TranscriptInputProps> = ({ onSubmitted, transcri
       console.log(`Successfully added ${lines.length} transcripts.`);
       setTranscriptList(''); // Clear textarea
       onSubmitted(); // Notify parent component
-    } catch (err: any) {
+    } catch (err) {
       console.error("Error adding transcripts:", err);
-      setError(`Failed to submit transcripts: ${err.message || 'Unknown error'}`);
+      setError(`Failed to submit transcripts: ${(err as Error).message || 'Unknown error'}`);
     } finally {
       setIsSubmitting(false);
     }
