@@ -40,8 +40,8 @@ export default function Home() {
   const [isFetchingReviewList, setIsFetchingReviewList] = useState<boolean>(false);
   const [transcriptToRerecord, setTranscriptToRerecord] = useState<Transcript | null>(null); // Item selected for re-recording
 
-  const tableName = 'transcripts'; // Define table name once
-  const bucketName = 'audio';     // Define bucket name once
+  const tableName = 'transcripts';
+  const bucketName = 'audio';
 
   // --- Data Fetching Functions ---
 
@@ -217,57 +217,87 @@ export default function Home() {
 
   const handleRecordingConfirm = async (blob: Blob | null, transcriptId: string) => {
     const isRerecord = transcriptToRerecord?.id === transcriptId;
-    const targetTranscript = transcriptToRerecord ?? currentTranscript; // Determine which transcript we're confirming
+    const targetTranscript = transcriptToRerecord ?? currentTranscript;
 
-    if (!blob || !transcriptId) {
-      setError("Recording data is missing.");
-      return;
-    }
-    if (!targetTranscript || targetTranscript.id !== transcriptId) {
-        setError("Transcript ID mismatch.");
-        return;
-    }
+    if (!blob || !transcriptId) { setError("Recording data is missing."); return; }
+    if (!targetTranscript || targetTranscript.id !== transcriptId) { setError("Transcript ID mismatch."); return; }
 
     setIsUploading(true);
     setError(null);
-    const filePath = `${bucketName}/${transcriptId}.webm`;
+    const filePath = `${transcriptId}.webm`;
+    console.log(`[Confirm Step 0] File path defined: ${filePath}, Bucket: ${bucketName}`);
 
     try {
-      // 1. Upload (upsert handles overwriting for re-records)
-      const { error: uploadError } = await supabase.storage
+      // 1. Upload to Supabase Storage (Add upsert: true back)
+      console.log(`[Confirm Step 1] Attempting upload (with upsert)...`);
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from(bucketName)
-        .upload(filePath, blob, { cacheControl: '3600', upsert: true });
-      if (uploadError) throw uploadError;
+        // Add upsert: true back to handle Strict Mode double calls gracefully
+        .upload(filePath, blob, { upsert: true });
+
+      if (uploadError) {
+          console.error("[Confirm Step 1 FAILED] Storage Upload Error:", uploadError);
+          throw uploadError;
+      }
+      console.log(`[Confirm Step 1 SUCCESS] Storage Upload successful.`);
+      console.log("[Confirm Step 1 Details] Upload data:", uploadData);
 
       // 2. Get Public URL
-      const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(filePath);
-      if (!urlData || !urlData.publicUrl) throw new Error("Could not get public URL after upload.");
-      const downloadURL = urlData.publicUrl;
+      console.log(`[Confirm Step 2] Attempting to get Public URL for path: ${filePath}`);
+      const { data: urlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(filePath);
 
-      // 3. Update Database (Mark as completed, even if it was already)
+      // Check for explicit error property if Supabase API provides one, otherwise check urlData
+      // Note: getPublicUrl itself might not throw an error object but return null/empty data
+      if (!urlData || !urlData.publicUrl) {
+           console.error("[Confirm Step 2 FAILED] Get Public URL Error: URL data missing or invalid.", urlData);
+           throw new Error("Could not get public URL after upload.");
+       }
+       const downloadURL = urlData.publicUrl;
+       console.log(`[Confirm Step 2 SUCCESS] Obtained Public URL: ${downloadURL}`);
+       // Check if the URL contains the duplicate bucket name
+       if (downloadURL.includes(`/${bucketName}/${bucketName}/`)) {
+           console.warn("[Confirm Step 2 WARNING] Public URL seems to contain duplicate bucket name:", downloadURL);
+       }
+
+      // 3. Update Database
+      console.log(`[Confirm Step 3] Attempting database update...`);
       const { error: updateError } = await supabase
         .from(tableName)
-        .update({ audio_url: downloadURL, status: 'completed' }) // Ensure status is 'completed'
+        .update({ audio_url: downloadURL, status: 'completed' })
         .eq('id', transcriptId);
-      if (updateError) throw updateError;
 
-      console.log(`Transcript ${transcriptId} ${isRerecord ? 're-recorded' : 'completed'}! URL: ${downloadURL}`);
+      if (updateError) {
+          console.error("[Confirm Step 3 FAILED] Database Update Error:", updateError);
+          throw updateError;
+      }
+      console.log(`[Confirm Step 3 SUCCESS] Database update successful.`);
 
-      // Clear re-record state and potentially switch mode
+      console.log(`[Confirm Complete] Transcript ${transcriptId} ${isRerecord ? 're-recorded' : 'completed'}! URL: ${downloadURL}`);
+
       if (isRerecord) {
           setTranscriptToRerecord(null);
-          // Option 1: Stay in record mode (if there are pending items)
-          // Option 2: Switch back to review mode automatically
-          setMode('review'); // Let's switch back to review mode
-          fetchCompletedTranscripts(); // Refetch review list immediately
+          setMode('review');
+          fetchCompletedTranscripts();
       }
-      // For normal records, the realtime listener handles fetching the next pending one.
 
     } catch (err) {
-      console.error("Error confirming recording:", err);
-      setError(`Failed to save recording: ${(err as Error).message}`);
+      console.error("[Confirm CATCH Block] Error confirming recording:", err);
+      try { console.error("Stringified error:", JSON.stringify(err, null, 2)); } catch { /* ignore */ }
+
+      let displayMessage = "An unknown error occurred.";
+      if (typeof err === 'object' && err !== null) {
+          if ('message' in err && typeof err.message === 'string') { displayMessage = err.message; }
+          else if ('error_description' in err && typeof err.error_description === 'string') { displayMessage = err.error_description; }
+          else if ('details' in err && typeof err.details === 'string') { displayMessage = err.details; }
+          else { try { displayMessage = JSON.stringify(err); } catch { /* ignore */ } }
+      } else if (typeof err === 'string') { displayMessage = err; }
+
+      setError(`Failed to save recording: ${displayMessage}`);
     } finally {
       setIsUploading(false);
+      console.log("[Confirm FINALLY Block] Upload process finished.");
     }
   };
 
