@@ -11,7 +11,7 @@ import TranscriptInput from '@/components/TranscriptInput';
 import Recorder from '@/components/Recorder';
 import { ImSpinner2 } from 'react-icons/im'; // Import a spinner icon
 // Add icons for review mode
-import { FaRedoAlt, FaListUl, FaMicrophone } from 'react-icons/fa';
+import { FaRedoAlt, FaListUl, FaMicrophone, FaClock } from 'react-icons/fa';
 
 // Interface remains largely the same, but id is likely string (UUID)
 // and created_at is string (ISO timestamp)
@@ -21,9 +21,26 @@ interface Transcript {
   audio_url: string | null;
   status: 'pending' | 'completed';
   created_at: string; // Supabase timestamp is typically string
+  duration_seconds: number | null; // Added duration
 }
 
 type Mode = 'record' | 'review';
+
+// Helper function to format seconds into HH:MM:SS
+const formatDuration = (totalSeconds: number): string => {
+    if (isNaN(totalSeconds) || totalSeconds < 0) {
+        return "00:00:00";
+    }
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+
+    const hoursStr = String(hours).padStart(2, '0');
+    const minutesStr = String(minutes).padStart(2, '0');
+    const secondsStr = String(seconds).padStart(2, '0');
+
+    return `${hoursStr}:${minutesStr}:${secondsStr}`;
+};
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -40,8 +57,12 @@ export default function Home() {
   const [isFetchingReviewList, setIsFetchingReviewList] = useState<boolean>(false);
   const [transcriptToRerecord, setTranscriptToRerecord] = useState<Transcript | null>(null); // Item selected for re-recording
 
+  // New state for total duration
+  const [totalDurationSeconds, setTotalDurationSeconds] = useState<number>(0);
+
   const tableName = 'transcripts';
   const bucketName = 'audio';
+  const targetDurationSeconds = 3600; // 1 hour
 
   // --- Data Fetching Functions ---
 
@@ -68,6 +89,30 @@ export default function Home() {
        console.error("Error fetching counts:", err);
        setError(`Failed to fetch counts: ${(err as Error).message}`);
     }
+  }, []);
+
+  // New: Fetch total duration
+  const fetchTotalDuration = useCallback(async () => {
+      setError(null);
+      try {
+          // Fetch only duration from completed transcripts
+          // Note: Fetching potentially many rows might be slow. Consider a DB function for large scale.
+          const { data, error } = await supabase
+              .from(tableName)
+              .select('duration_seconds')
+              .eq('status', 'completed')
+              .not('duration_seconds', 'is', null); // Only include rows where duration is set
+
+          if (error) throw error;
+
+          const total = (data ?? []).reduce((sum, item) => sum + (item.duration_seconds || 0), 0);
+          setTotalDurationSeconds(total);
+
+      } catch (err) {
+          console.error("Error fetching total duration:", err);
+          setError(`Failed to fetch total duration: ${(err as Error).message}`);
+          setTotalDurationSeconds(0);
+      }
   }, []);
 
   const fetchNextPendingTranscript = useCallback(async () => {
@@ -152,7 +197,7 @@ export default function Home() {
     if (transcriptsExist === true) {
         setIsLoading(true);
         // Fetch initial counts and the first transcript
-        Promise.all([fetchCounts(), fetchNextPendingTranscript()]).finally(() => {
+        Promise.all([fetchCounts(), fetchTotalDuration(), fetchNextPendingTranscript()]).finally(() => {
             setIsLoading(false);
         });
 
@@ -166,6 +211,7 @@ export default function Home() {
                     // Simple approach: refetch everything relevant
                     // More complex: inspect payload to be more efficient
                     fetchCounts();
+                    fetchTotalDuration();
                     fetchNextPendingTranscript();
 
                     // If in review mode and a change happens, refetch the review list
@@ -204,7 +250,7 @@ export default function Home() {
         };
     }
     // Dependencies: transcriptsExist triggers setup, fetch functions are memoized
-  }, [transcriptsExist, fetchCounts, fetchNextPendingTranscript, fetchCompletedTranscripts, transcriptToRerecord?.id]); // Added fetchCompletedTranscripts to dependency
+  }, [transcriptsExist, fetchCounts, fetchTotalDuration, fetchNextPendingTranscript, fetchCompletedTranscripts, transcriptToRerecord?.id]); // Added fetchTotalDuration
 
   // --- Handler Functions ---
 
@@ -213,6 +259,41 @@ export default function Home() {
     // Optionally switch back to record mode if user was in review mode
     setMode('record');
     setTranscriptToRerecord(null); // Clear any pending re-record
+  };
+
+  // Function to get audio duration from blob
+  const getAudioDuration = (blob: Blob): Promise<number> => {
+      return new Promise((resolve, reject) => {
+          const audio = new Audio();
+          const objectUrl = URL.createObjectURL(blob);
+          audio.src = objectUrl;
+
+          audio.addEventListener('loadedmetadata', () => {
+              const duration = audio.duration;
+              URL.revokeObjectURL(objectUrl); // Clean up object URL
+              if (isNaN(duration) || !isFinite(duration)) {
+                  console.warn("Could not determine audio duration.");
+                  resolve(0); // Resolve with 0 if duration is invalid
+              } else {
+                  resolve(duration);
+              }
+          });
+
+          audio.addEventListener('error', (e) => {
+              console.error("Error loading audio metadata:", e);
+              URL.revokeObjectURL(objectUrl); // Clean up on error too
+              reject(new Error("Failed to load audio metadata"));
+          });
+
+          // Handle cases where metadata never loads (e.g., invalid blob)
+          setTimeout(() => {
+            if (!audio.duration) {
+                URL.revokeObjectURL(objectUrl);
+                console.warn("Timeout waiting for audio metadata.");
+                resolve(0);
+            }
+          }, 5000); // 5 second timeout
+      });
   };
 
   const handleRecordingConfirm = async (blob: Blob | null, transcriptId: string) => {
@@ -227,60 +308,71 @@ export default function Home() {
     const filePath = `${transcriptId}.webm`;
     console.log(`[Confirm Step 0] File path defined: ${filePath}, Bucket: ${bucketName}`);
 
+    let duration = 0;
     try {
-      // 1. Upload to Supabase Storage (Add upsert: true back)
-      console.log(`[Confirm Step 1] Attempting upload (with upsert)...`);
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from(bucketName)
-        // Add upsert: true back to handle Strict Mode double calls gracefully
-        .upload(filePath, blob, { upsert: true });
+        // 0. Get Duration
+        console.log(`[Confirm Step 0.5] Getting audio duration...`);
+        duration = await getAudioDuration(blob);
+        duration = Math.round(duration); // Round to nearest second
+        console.log(`[Confirm Step 0.5 SUCCESS] Duration: ${duration}s`);
 
-      if (uploadError) {
-          console.error("[Confirm Step 1 FAILED] Storage Upload Error:", uploadError);
-          throw uploadError;
-      }
-      console.log(`[Confirm Step 1 SUCCESS] Storage Upload successful.`);
-      console.log("[Confirm Step 1 Details] Upload data:", uploadData);
+        // 1. Upload to Supabase Storage (Add upsert: true back)
+        console.log(`[Confirm Step 1] Attempting upload (with upsert)...`);
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from(bucketName)
+          // Add upsert: true back to handle Strict Mode double calls gracefully
+          .upload(filePath, blob, { upsert: true });
 
-      // 2. Get Public URL
-      console.log(`[Confirm Step 2] Attempting to get Public URL for path: ${filePath}`);
-      const { data: urlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(filePath);
+        if (uploadError) {
+            console.error("[Confirm Step 1 FAILED] Storage Upload Error:", uploadError);
+            throw uploadError;
+        }
+        console.log(`[Confirm Step 1 SUCCESS] Storage Upload successful.`);
+        console.log("[Confirm Step 1 Details] Upload data:", uploadData);
 
-      // Check for explicit error property if Supabase API provides one, otherwise check urlData
-      // Note: getPublicUrl itself might not throw an error object but return null/empty data
-      if (!urlData || !urlData.publicUrl) {
-           console.error("[Confirm Step 2 FAILED] Get Public URL Error: URL data missing or invalid.", urlData);
-           throw new Error("Could not get public URL after upload.");
-       }
-       const downloadURL = urlData.publicUrl;
-       console.log(`[Confirm Step 2 SUCCESS] Obtained Public URL: ${downloadURL}`);
-       // Check if the URL contains the duplicate bucket name
-       if (downloadURL.includes(`/${bucketName}/${bucketName}/`)) {
-           console.warn("[Confirm Step 2 WARNING] Public URL seems to contain duplicate bucket name:", downloadURL);
-       }
+        // 2. Get Public URL
+        console.log(`[Confirm Step 2] Attempting to get Public URL for path: ${filePath}`);
+        const { data: urlData } = supabase.storage
+          .from(bucketName)
+          .getPublicUrl(filePath);
 
-      // 3. Update Database
-      console.log(`[Confirm Step 3] Attempting database update...`);
-      const { error: updateError } = await supabase
-        .from(tableName)
-        .update({ audio_url: downloadURL, status: 'completed' })
-        .eq('id', transcriptId);
+        // Check for explicit error property if Supabase API provides one, otherwise check urlData
+        // Note: getPublicUrl itself might not throw an error object but return null/empty data
+        if (!urlData || !urlData.publicUrl) {
+             console.error("[Confirm Step 2 FAILED] Get Public URL Error: URL data missing or invalid.", urlData);
+             throw new Error("Could not get public URL after upload.");
+         }
+         const downloadURL = urlData.publicUrl;
+         console.log(`[Confirm Step 2 SUCCESS] Obtained Public URL: ${downloadURL}`);
+         // Check if the URL contains the duplicate bucket name
+         if (downloadURL.includes(`/${bucketName}/${bucketName}/`)) {
+             console.warn("[Confirm Step 2 WARNING] Public URL seems to contain duplicate bucket name:", downloadURL);
+         }
 
-      if (updateError) {
-          console.error("[Confirm Step 3 FAILED] Database Update Error:", updateError);
-          throw updateError;
-      }
-      console.log(`[Confirm Step 3 SUCCESS] Database update successful.`);
+        // 3. Update Database
+        console.log(`[Confirm Step 3] Attempting database update with duration...`);
+        const { error: updateError } = await supabase
+          .from(tableName)
+          .update({ audio_url: downloadURL, status: 'completed', duration_seconds: duration })
+          .eq('id', transcriptId);
 
-      console.log(`[Confirm Complete] Transcript ${transcriptId} ${isRerecord ? 're-recorded' : 'completed'}! URL: ${downloadURL}`);
+        if (updateError) {
+            console.error("[Confirm Step 3 FAILED] Database Update Error:", updateError);
+            throw updateError;
+        }
+        console.log(`[Confirm Step 3 SUCCESS] Database update successful.`);
 
-      if (isRerecord) {
-          setTranscriptToRerecord(null);
-          setMode('review');
-          fetchCompletedTranscripts();
-      }
+        console.log(`[Confirm Complete] Transcript ${transcriptId} ${isRerecord ? 're-recorded' : 'completed'}! Duration: ${duration}s, URL: ${downloadURL}`);
+
+        if (isRerecord) {
+            setTranscriptToRerecord(null);
+            setMode('review');
+            fetchCompletedTranscripts();
+        }
+        else {
+            // Optimistically update duration state after successful *new* recording
+            setTotalDurationSeconds(prev => prev + duration);
+        }
 
     } catch (err) {
       console.error("[Confirm CATCH Block] Error confirming recording:", err);
@@ -355,9 +447,28 @@ export default function Home() {
   // Display active transcript (either pending or the one being re-recorded)
   const activeTranscriptForRecording = transcriptToRerecord ?? currentTranscript;
 
+  const progressPercent = totalDurationSeconds > 0 ? Math.min(100, (totalDurationSeconds / targetDurationSeconds) * 100) : 0;
+
   return (
     <main className="container mx-auto p-4 flex flex-col items-center justify-center min-h-screen">
       <h1 className="text-3xl md:text-4xl font-bold mb-8 text-center text-gray-800 dark:text-gray-200">Speak Casually</h1>
+
+      {/* Stats Section */}
+      {transcriptsExist && (
+          <div className="w-full max-w-lg mb-6 p-4 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
+              <h2 className="text-lg font-semibold mb-3 text-center text-gray-700 dark:text-gray-300">Progress</h2>
+              <div className="flex justify-between items-center text-sm mb-1 text-gray-600 dark:text-gray-400">
+                  <span>Total Recorded: {formatDuration(totalDurationSeconds)}</span>
+                  <span>Goal: {formatDuration(targetDurationSeconds)} (1 Hr)</span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5">
+                  <div
+                      className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${progressPercent}%` }}
+                  ></div>
+              </div>
+          </div>
+      )}
 
       {/* Mode Switch Buttons (only show if transcripts exist) */}
        {transcriptsExist && (
@@ -459,6 +570,7 @@ export default function Home() {
                            {reviewList.map((item) => (
                                <li key={item.id} className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
                                    <p className="text-gray-800 dark:text-gray-200 mb-3 font-mono">{item.transcript}</p>
+                                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Duration: {item.duration_seconds ? `${item.duration_seconds}s` : 'N/A'}</p>
                                    <div className="flex flex-col sm:flex-row items-center gap-4">
                                        {item.audio_url ? (
                                            <audio
