@@ -461,7 +461,13 @@ export default function Home() {
                                    <p className="text-gray-800 dark:text-gray-200 mb-3 font-mono">{item.transcript}</p>
                                    <div className="flex flex-col sm:flex-row items-center gap-4">
                                        {item.audio_url ? (
-                                           <audio src={item.audio_url} controls className="w-full sm:w-auto flex-grow rounded-md shadow-sm h-10"></audio>
+                                           <audio
+                                               src={`${item.audio_url}?t=${Date.now()}`}
+                                               controls
+                                               className="w-full sm:w-auto flex-grow rounded-md shadow-sm h-10"
+                                            >
+                                                 Your browser does not support the audio element.
+                                            </audio>
                                        ) : (
                                            <p className="text-sm text-gray-400 flex-grow">Audio not found</p>
                                        )}
